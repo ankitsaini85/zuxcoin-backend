@@ -1,0 +1,343 @@
+const User = require("../models/User");
+const WithdrawalRequest = require("../models/WithdrawalRequest");
+const Transaction = require("../models/Transaction");
+const { getCoinPrice, getActivationFee } = require("../config/coinConfig");
+
+const TAX_RATE = 0.05;
+
+const getActivationAmount = (user, coinPrice) => {
+  if (Number.isFinite(user.activationAmountRemaining) && user.activationAmountRemaining > 0) {
+    return user.activationAmountRemaining;
+  }
+  if (Number.isFinite(user.activationCoinsRemaining)) {
+    return user.activationCoinsRemaining * coinPrice;
+  }
+  return 0;
+};
+
+const getActivationCoins = (user, coinPrice) => {
+  if (!Number.isFinite(coinPrice) || coinPrice <= 0) return 0;
+  const amount = getActivationAmount(user, coinPrice);
+  return amount / coinPrice;
+};
+
+const getToday = () => {
+  const now = new Date();
+  return `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}`;
+};
+
+const resetDailyCoinsIfNeeded = async (user) => {
+  const today = getToday();
+  const coinPrice = getCoinPrice();
+  const currentCoins = getActivationCoins(user, coinPrice);
+
+  if (user.withdrawalData.lastWithdrawalDate !== today) {
+    user.withdrawalData.lastWithdrawalDate = today;
+    user.withdrawalData.withdrawnTodayCoins = 0;
+    user.withdrawalData.startOfDayCoins = currentCoins;
+    await user.save();
+    return;
+  }
+
+  if (!Number.isFinite(user.withdrawalData.withdrawnTodayCoins)) {
+    user.withdrawalData.withdrawnTodayCoins = 0;
+  }
+
+  // Update startOfDayCoins if current coins are higher (admin updated coins mid-day)
+  if (!Number.isFinite(user.withdrawalData.startOfDayCoins) || user.withdrawalData.startOfDayCoins <= 0) {
+    if (currentCoins > 0) {
+      user.withdrawalData.startOfDayCoins = currentCoins;
+    }
+  } else if (currentCoins > user.withdrawalData.startOfDayCoins) {
+    // If coins increased (admin added coins), update the daily limit basis
+    user.withdrawalData.startOfDayCoins = currentCoins;
+  }
+
+  await user.save();
+};
+
+// USER REQUEST COIN WITHDRAWAL (10% daily limit)
+exports.createWithdrawalRequest = async (req, res) => {
+  try {
+    const { coinAmount } = req.body;
+
+    const user = await User.findById(req.user);
+
+    if (!user || !user.isActivated)
+      return res.status(400).json({ message: "Invalid user" });
+
+    if (user.activationAmountRemaining === undefined || user.activationAmountRemaining === null) {
+      const coinPrice = getCoinPrice();
+      const fallback = Number.isFinite(user.activationCoinsRemaining)
+        ? user.activationCoinsRemaining * coinPrice
+        : getActivationFee();
+      user.activationAmountRemaining = fallback;
+      await user.save();
+    }
+
+    const coinsRequested = Number(coinAmount);
+    if (!Number.isFinite(coinsRequested) || coinsRequested <= 0)
+      return res.status(400).json({ message: "Invalid coin amount" });
+
+    // Only 1 pending COIN request allowed
+    const existingPending = await WithdrawalRequest.findOne({
+      userId: user._id,
+      status: "pending",
+      type: "coin",
+    });
+
+    if (existingPending)
+      return res.status(400).json({
+        message: "You already have a pending coin withdrawal request",
+      });
+
+    await resetDailyCoinsIfNeeded(user);
+
+    const coinPrice = getCoinPrice();
+    const currentCoins = getActivationCoins(user, coinPrice);
+    const startCoins = Number.isFinite(user.withdrawalData.startOfDayCoins)
+      ? user.withdrawalData.startOfDayCoins
+      : currentCoins;
+    const dailyLimit = startCoins * 0.1;
+    const remaining = dailyLimit - user.withdrawalData.withdrawnTodayCoins;
+
+    if (coinsRequested > remaining)
+      return res.status(400).json({
+        message: `You can withdraw only ${remaining.toFixed(2)} coins today`,
+      });
+
+    if (coinsRequested > currentCoins)
+      return res.status(400).json({ message: "Insufficient coin balance" });
+
+    // Don't count pending - only increment withdrawnToday on approval
+
+    const rupeeAmount = coinsRequested * coinPrice;
+
+    const taxAmount = rupeeAmount * TAX_RATE;
+    const netAmount = rupeeAmount - taxAmount;
+
+    const request = await WithdrawalRequest.create({
+      userId: user._id,
+      amount: rupeeAmount,
+      coinAmount: coinsRequested,
+      taxRate: TAX_RATE,
+      taxAmount,
+      netAmount,
+      type: "coin",
+    });
+
+    res.json({
+      message: "Withdrawal request submitted",
+      remainingToday: (dailyLimit - user.withdrawalData.withdrawnTodayCoins).toFixed(2),
+      request,
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// USER REQUEST BONUS WITHDRAWAL
+exports.createBonusWithdrawalRequest = async (req, res) => {
+  try {
+    const { amount } = req.body;
+
+    const user = await User.findById(req.user);
+
+    if (!user || !user.isActivated)
+      return res.status(400).json({ message: "Invalid user" });
+
+    if (user.activationAmountRemaining === undefined || user.activationAmountRemaining === null) {
+      const coinPrice = getCoinPrice();
+      const fallback = Number.isFinite(user.activationCoinsRemaining)
+        ? user.activationCoinsRemaining * coinPrice
+        : getActivationFee();
+      user.activationAmountRemaining = fallback;
+      await user.save();
+    }
+
+    const rupeeAmount = Number(amount);
+    if (!Number.isFinite(rupeeAmount) || rupeeAmount <= 0)
+      return res.status(400).json({ message: "Invalid amount" });
+
+    const existingPending = await WithdrawalRequest.findOne({
+      userId: user._id,
+      status: "pending",
+      type: "bonus",
+    });
+
+    if (existingPending)
+      return res.status(400).json({
+        message: "You already have a pending bonus withdrawal request",
+      });
+
+    if (rupeeAmount > user.bonusWallet)
+      return res.status(400).json({ message: "Insufficient bonus balance" });
+
+    const taxAmount = rupeeAmount * TAX_RATE;
+    const netAmount = rupeeAmount - taxAmount;
+
+    const request = await WithdrawalRequest.create({
+      userId: user._id,
+      amount: rupeeAmount,
+      coinAmount: null,
+      taxRate: TAX_RATE,
+      taxAmount,
+      netAmount,
+      type: "bonus",
+    });
+
+    res.json({
+      message: "Bonus withdrawal request submitted",
+      request,
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// ADMIN APPROVE
+exports.approveWithdrawal = async (req, res) => {
+  try {
+    const { requestId } = req.body;
+
+    console.log("Approve request for ID:", requestId);
+
+    const request = await WithdrawalRequest.findById(requestId).populate("userId");
+
+    console.log("Found request:", request);
+
+    if (!request) {
+      return res.status(400).json({ message: "Withdrawal request not found" });
+    }
+
+    if (request.status !== "pending") {
+      return res.status(400).json({ message: `Cannot approve: Request status is ${request.status}` });
+    }
+
+    const user = request.userId;
+
+    if (!user) {
+      return res.status(400).json({ message: "User not found for this request" });
+    }
+
+    if (request.type === "bonus") {
+      if (request.amount > user.bonusWallet) {
+        return res.status(400).json({ message: "Insufficient bonus balance" });
+      }
+      user.bonusWallet -= request.amount;
+      await Transaction.create({
+        userId: user._id,
+        amount: -request.amount,
+        type: "bonus_withdrawal",
+      });
+    } else {
+      const coinPrice = getCoinPrice();
+      const coinAmount = Number.isFinite(request.coinAmount)
+        ? request.coinAmount
+        : request.amount / coinPrice;
+
+      const currentCoins = getActivationCoins(user, coinPrice);
+      if (coinAmount > currentCoins) {
+        return res.status(400).json({ message: "Insufficient coin balance" });
+      }
+      await resetDailyCoinsIfNeeded(user);
+      const currentAmount = getActivationAmount(user, coinPrice);
+      user.activationAmountRemaining = Math.max(
+        currentAmount - coinAmount * coinPrice,
+        0
+      );
+      user.withdrawalData.withdrawnTodayCoins += coinAmount;
+      await Transaction.create({
+        userId: user._id,
+        amount: -request.amount,
+        coinAmount: coinAmount,
+        type: "coin_withdrawal",
+      });
+    }
+
+    await user.save();
+
+    request.status = "approved";
+    request.approvedAt = new Date();
+    await request.save();
+
+    res.json({
+      message: "Withdrawal approved successfully",
+      updatedBonusWallet: user.bonusWallet,
+      updatedCoins: getActivationCoins(user, getCoinPrice()),
+      taxRate: request.taxRate ?? TAX_RATE,
+      taxAmount: request.taxAmount ?? 0,
+      netAmount: request.netAmount ?? request.amount,
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// ADMIN REJECT
+exports.rejectWithdrawal = async (req, res) => {
+  try {
+    const { requestId } = req.body;
+
+    const request = await WithdrawalRequest.findById(requestId);
+
+    if (!request || request.status !== "pending")
+      return res.status(400).json({ message: "Invalid request" });
+
+    // No need to reverse withdrawnToday since pending requests don't count anymore
+    request.status = "rejected";
+    await request.save();
+
+    res.json({ message: "Withdrawal rejected" });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// USER INFO API
+exports.getWithdrawalInfo = async (req, res) => {
+  try {
+    const user = await User.findById(req.user);
+
+    await resetDailyCoinsIfNeeded(user);
+
+    const coinPrice = getCoinPrice();
+    const currentCoins = getActivationCoins(user, coinPrice);
+    const startCoins = Number.isFinite(user.withdrawalData.startOfDayCoins)
+      ? user.withdrawalData.startOfDayCoins
+      : currentCoins;
+    const dailyLimit = startCoins * 0.1;
+    const remaining = dailyLimit - user.withdrawalData.withdrawnTodayCoins;
+
+    const history = await WithdrawalRequest.find({
+      userId: user._id,
+    }).sort({ createdAt: -1 });
+
+    res.json({
+      bonusWallet: user.bonusWallet,
+      coins: currentCoins,
+      coinPrice: coinPrice,
+      activationAmountRemaining: getActivationAmount(user, coinPrice),
+      taxRate: TAX_RATE,
+      dailyLimit,
+      withdrawnTodayCoins: user.withdrawalData.withdrawnTodayCoins,
+      remaining,
+      history,
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// ADMIN GET ALL WITHDRAWALS
+exports.getAllWithdrawals = async (req, res) => {
+  try {
+    const withdrawals = await WithdrawalRequest.find()
+      .populate("userId", "name email phone uniqueId bankDetails")
+      .sort({ createdAt: -1 });
+
+    res.json({ withdrawals });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
