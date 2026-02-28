@@ -47,22 +47,14 @@ const ensureUserFinancials = async (user) => {
     }
   }
 
-  if (user.isActivated) {
-    const amountMissing =
-      user.activationAmountRemaining === undefined || user.activationAmountRemaining === null;
-    const shouldBackfill =
-      amountMissing ||
-      (user.activationAmountRemaining <= 0 && Number.isFinite(user.activationCoinsRemaining) && user.activationCoinsRemaining > 0);
-
-    if (shouldBackfill) {
-      const coinPrice = getCoinPrice();
-      if (Number.isFinite(user.activationCoinsRemaining)) {
-        user.activationAmountRemaining = Math.max(user.activationCoinsRemaining, 0) * coinPrice;
-      } else {
-        const legacyWallet = Number.isFinite(user.walletBalance) ? user.walletBalance : 0;
-        const remaining = Math.max(legacyWallet - (user.bonusWallet || 0), 0);
-        user.activationAmountRemaining = remaining;
-      }
+  // Migration: Convert old activationAmountRemaining to coinWallet if needed
+  if (user.isActivated && (!user.coinWallet || user.coinWallet === 0)) {
+    const coinPrice = getCoinPrice();
+    if (Number.isFinite(user.activationAmountRemaining) && user.activationAmountRemaining > 0) {
+      user.coinWallet = user.activationAmountRemaining / coinPrice;
+      updated = true;
+    } else if (Number.isFinite(user.activationCoinsRemaining) && user.activationCoinsRemaining > 0) {
+      user.coinWallet = user.activationCoinsRemaining;
       updated = true;
     }
   }
@@ -100,11 +92,15 @@ exports.activateAccount = async (req, res) => {
     user.isActivated = true;
     const activationFee = getActivationFee();
     const coinPrice = getCoinPrice();
-    user.activationAmountRemaining = activationFee;
-    user.activationCoinsRemaining = coinPrice > 0 ? activationFee / coinPrice : 0;
+    
+    // Add coins to coinWallet based on activation fee and current price
+    user.coinWallet = coinPrice > 0 ? activationFee / coinPrice : 0;
+    
+    // Reset deprecated fields
+    user.activationAmountRemaining = 0;
+    user.activationCoinsRemaining = 0;
     user.walletBalance = 0;
     user.bonusWallet = user.bonusWallet || 0;
-    // activation coins tracked separately from bonus wallet
 
     await user.save();
 

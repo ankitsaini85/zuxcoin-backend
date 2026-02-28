@@ -192,8 +192,13 @@ router.post('/watchpay/callback', express.urlencoded({ extended: true }), async 
           user.isActivated = true;
           const activationFee = getActivationFee();
           const coinPrice = getCoinPrice();
-          user.activationAmountRemaining = activationFee;
-          user.activationCoinsRemaining = coinPrice > 0 ? activationFee / coinPrice : 0;
+          
+          // Add coins to coinWallet based on activation fee and current price
+          user.coinWallet = coinPrice > 0 ? activationFee / coinPrice : 0;
+          
+          // Reset deprecated fields
+          user.activationAmountRemaining = 0;
+          user.activationCoinsRemaining = 0;
           user.walletBalance = 0;
           user.bonusWallet = user.bonusWallet || 0;
 

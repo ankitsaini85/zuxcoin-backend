@@ -4,22 +4,6 @@ const Transaction = require("../models/Transaction");
 const Order = require("../models/Order");
 const { getCoinPrice } = require("../config/coinConfig");
 
-const getActivationAmount = (user, coinPrice) => {
-  if (Number.isFinite(user.activationAmountRemaining) && user.activationAmountRemaining > 0) {
-    return user.activationAmountRemaining;
-  }
-  if (Number.isFinite(user.activationCoinsRemaining)) {
-    return user.activationCoinsRemaining * coinPrice;
-  }
-  return 0;
-};
-
-const getActivationCoins = (user, coinPrice) => {
-  if (!Number.isFinite(coinPrice) || coinPrice <= 0) return 0;
-  const amount = getActivationAmount(user, coinPrice);
-  return amount / coinPrice;
-};
-
 // CREATE TRANSFER REQUEST
 exports.createTransferRequest = async (req, res) => {
   try {
@@ -52,8 +36,7 @@ exports.createTransferRequest = async (req, res) => {
     }
 
     // Check sender has sufficient coins
-    const coinPrice = getCoinPrice();
-    const senderCoins = getActivationCoins(sender, coinPrice);
+    const senderCoins = sender.coinWallet || 0;
     if (coins > senderCoins) {
       return res.status(400).json({
         message: `Insufficient coins. You have ${senderCoins.toFixed(2)} coins`,
@@ -150,36 +133,27 @@ exports.approveTransfer = async (req, res) => {
     }
 
     const coinPrice = getCoinPrice();
-    const senderCoins = getActivationCoins(sender, coinPrice);
+    const senderCoins = sender.coinWallet || 0;
     if (senderCoins < transferRequest.coinAmount) {
       return res.status(400).json({
         message: "Sender no longer has sufficient coins to complete this transfer",
       });
     }
 
-    // Calculate transfer amount and tax
-    const taxRate = 0.05;
-    const transferValue = transferRequest.coinAmount * coinPrice; // ₹1000
-    const taxAmount = transferValue * taxRate; // ₹50
+    // Calculate transfer amount
+    const transferValue = transferRequest.coinAmount * coinPrice;
 
     // SENDER SIDE
-    // Deduct full transfer value from sender's activation wallet
-    const senderAmount = getActivationAmount(sender, coinPrice);
-    sender.activationAmountRemaining = Math.max(
-      0,
-      senderAmount - transferValue
-    );
+    // Deduct coins from sender's coin wallet
+    sender.coinWallet = Math.max(0, (sender.coinWallet || 0) - transferRequest.coinAmount);
 
-    // Credit full transfer value to sender's bonus wallet (as payment)
+    // Credit transfer value to sender's bonus wallet (as payment)
     sender.bonusWallet = (sender.bonusWallet || 0) + transferValue;
     await sender.save();
 
     // RECEIVER SIDE
-    // Credit full transfer value to receiver's activation wallet
-    const recipientAmount = getActivationAmount(user, coinPrice);
-    
-    // Credit ₹1000 to receiver for the coins
-    user.activationAmountRemaining = recipientAmount + transferValue;
+    // Add coins to receiver's coin wallet
+    user.coinWallet = (user.coinWallet || 0) + transferRequest.coinAmount;
     await user.save();
 
     // Update transfer status
@@ -208,14 +182,14 @@ exports.approveTransfer = async (req, res) => {
       userId: user._id,
       type: "coin_transfer_received",
       amount: transferRequest.coinAmount,
-      description: `Received ${transferRequest.coinAmount.toFixed(2)} coins from ${transferRequest.fromUniqueId} (Tax: ₹${taxAmount.toFixed(2)})`,
+      description: `Received ${transferRequest.coinAmount.toFixed(2)} coins from ${transferRequest.fromUniqueId}`,
       relatedTransferId: transferRequest._id,
     });
 
     res.json({
       message: "Transfer approved successfully",
       request: transferRequest,
-      newBalance: getActivationCoins(user, coinPrice),
+      newBalance: user.coinWallet || 0,
     });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -343,33 +317,27 @@ exports.approveTransferWithPayment = async (req, res) => {
     }
 
     const coinPrice = getCoinPrice();
-    const senderCoins = getActivationCoins(sender, coinPrice);
+    const senderCoins = sender.coinWallet || 0;
     if (senderCoins < transferRequest.coinAmount) {
       return res.status(400).json({
         message: "Sender no longer has sufficient coins to complete this transfer",
       });
     }
 
-    // CALCULATE TRANSFER AMOUNT AND TAX
-    const transferValue = transferRequest.coinAmount * coinPrice; // ₹1000
-    const taxRate = 0.05;
-    const taxAmount = transferValue * taxRate; // ₹50 (paid through payment)
-    const totalPayment = transferValue + taxAmount; // ₹1050 (what was paid)
+    // CALCULATE TRANSFER AMOUNT
+    const transferValue = transferRequest.coinAmount * coinPrice;
 
-    // DEDUCT FROM SENDER'S ACTIVATION WALLET
-    const senderAmount = getActivationAmount(sender, coinPrice);
-    sender.activationAmountRemaining = Math.max(
-      0,
-      senderAmount - transferValue
-    );
+    // SENDER SIDE
+    // Deduct coins from sender's coin wallet
+    sender.coinWallet = Math.max(0, (sender.coinWallet || 0) - transferRequest.coinAmount);
 
-    // ADD FULL TRANSFER VALUE TO SENDER'S BONUS WALLET
+    // Add transfer value to sender's bonus wallet
     sender.bonusWallet = (sender.bonusWallet || 0) + transferValue;
     await sender.save();
 
-    // ADD FULL TRANSFER VALUE TO RECIPIENT'S ACTIVATION WALLET (tax was paid separately via payment)
-    const recipientAmount = getActivationAmount(user, coinPrice);
-    user.activationAmountRemaining = recipientAmount + transferValue;
+    // RECEIVER SIDE
+    // Add coins to receiver's coin wallet
+    user.coinWallet = (user.coinWallet || 0) + transferRequest.coinAmount;
     await user.save();
 
     // UPDATE TRANSFER STATUS
@@ -390,8 +358,8 @@ exports.approveTransferWithPayment = async (req, res) => {
     await Transaction.create({
       userId: sender._id,
       type: "transfer_bonus",
-      amount: paymentAmount,
-      description: `Received ₹${paymentAmount.toFixed(2)} bonus from transfer payment`,
+      amount: transferValue,
+      description: `Received ₹${transferValue.toFixed(2)} bonus from transfer payment`,
       relatedTransferId: transferRequest._id,
     });
 
@@ -407,8 +375,8 @@ exports.approveTransferWithPayment = async (req, res) => {
     res.json({
       message: "Transfer approved successfully with payment",
       request: transferRequest,
-      paymentAmount: paymentAmount,
-      newBalance: getActivationCoins(user, coinPrice),
+      paymentAmount: transferValue,
+      newBalance: user.coinWallet || 0,
       senderBonus: sender.bonusWallet,
     });
   } catch (err) {

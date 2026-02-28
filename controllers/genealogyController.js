@@ -14,20 +14,10 @@ const parsePagination = (req) => {
 };
 
 const selectFields =
-	"name email uniqueId referralCode position isActivated bonusWallet walletBalance activationAmountRemaining activationCoinsRemaining createdAt referredBy coins";
+	"name email uniqueId referralCode position isActivated bonusWallet walletBalance coinWallet createdAt referredBy coins";
 
 const mapUser = (user) => {
-	const coinPrice = getCoinPrice();
-	const activationAmount = Number.isFinite(user.activationAmountRemaining)
-		? user.activationAmountRemaining
-		: Number.isFinite(user.activationCoinsRemaining)
-		? user.activationCoinsRemaining * coinPrice
-		: 0;
-	const coins = Number.isFinite(user.coins)
-		? user.coins
-		: coinPrice > 0
-		? activationAmount / coinPrice
-		: 0;
+	const coins = user.coinWallet || 0;
 
 	return ({
 	_id: user._id,
@@ -40,8 +30,7 @@ const mapUser = (user) => {
 	walletBalance: user.walletBalance ?? user.bonusWallet ?? 0,
 	bonusWallet: user.bonusWallet ?? 0,
 	coins: coins,
-	activationAmountRemaining: activationAmount,
-	activationCoinsRemaining: coins,
+	coinWallet: coins,
 	referredBy: user.referredBy
 		? {
 				name: user.referredBy.name,

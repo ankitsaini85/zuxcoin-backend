@@ -26,9 +26,9 @@ const userSchema = new mongoose.Schema(
 
     walletBalance: { type: Number, default: 0 },
     bonusWallet: { type: Number, default: 0 },
-    activationAmountRemaining: { type: Number, default: 0 },
-    activationCoinsRemaining: { type: Number, default: 0 },
-    // coins field removed - now calculated dynamically
+    coinWallet: { type: Number, default: 0 }, // Actual coin balance
+    activationAmountRemaining: { type: Number, default: 0 }, // Deprecated - kept for migration
+    activationCoinsRemaining: { type: Number, default: 0 }, // Deprecated - kept for migration
 
     bankDetails: {
       accountHolderName: { type: String, default: "" },
@@ -67,18 +67,9 @@ const userSchema = new mongoose.Schema(
   }
 );
 
-// Virtual field: Calculate coins from wallet balance
+// Virtual field: Return coins from coinWallet for backward compatibility
 userSchema.virtual("coins").get(function () {
-  const coinPrice = getCoinPrice();
-  if (!Number.isFinite(coinPrice) || coinPrice <= 0) return 0;
-
-  const amount = Number.isFinite(this.activationAmountRemaining) && this.activationAmountRemaining > 0
-    ? this.activationAmountRemaining
-    : Number.isFinite(this.activationCoinsRemaining)
-      ? this.activationCoinsRemaining * coinPrice
-      : 0;
-
-  return amount / coinPrice;
+  return this.coinWallet || 0;
 });
 
 module.exports = mongoose.model("User", userSchema);

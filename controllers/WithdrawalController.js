@@ -5,22 +5,6 @@ const { getCoinPrice, getActivationFee } = require("../config/coinConfig");
 
 const TAX_RATE = 0.05;
 
-const getActivationAmount = (user, coinPrice) => {
-  if (Number.isFinite(user.activationAmountRemaining) && user.activationAmountRemaining > 0) {
-    return user.activationAmountRemaining;
-  }
-  if (Number.isFinite(user.activationCoinsRemaining)) {
-    return user.activationCoinsRemaining * coinPrice;
-  }
-  return 0;
-};
-
-const getActivationCoins = (user, coinPrice) => {
-  if (!Number.isFinite(coinPrice) || coinPrice <= 0) return 0;
-  const amount = getActivationAmount(user, coinPrice);
-  return amount / coinPrice;
-};
-
 const getToday = () => {
   const now = new Date();
   return `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}`;
@@ -28,8 +12,7 @@ const getToday = () => {
 
 const resetDailyCoinsIfNeeded = async (user) => {
   const today = getToday();
-  const coinPrice = getCoinPrice();
-  const currentCoins = getActivationCoins(user, coinPrice);
+  const currentCoins = user.coinWallet || 0;
 
   if (user.withdrawalData.lastWithdrawalDate !== today) {
     user.withdrawalData.lastWithdrawalDate = today;
@@ -66,15 +49,6 @@ exports.createWithdrawalRequest = async (req, res) => {
     if (!user || !user.isActivated)
       return res.status(400).json({ message: "Invalid user" });
 
-    if (user.activationAmountRemaining === undefined || user.activationAmountRemaining === null) {
-      const coinPrice = getCoinPrice();
-      const fallback = Number.isFinite(user.activationCoinsRemaining)
-        ? user.activationCoinsRemaining * coinPrice
-        : getActivationFee();
-      user.activationAmountRemaining = fallback;
-      await user.save();
-    }
-
     const coinsRequested = Number(coinAmount);
     if (!Number.isFinite(coinsRequested) || coinsRequested <= 0)
       return res.status(400).json({ message: "Invalid coin amount" });
@@ -94,7 +68,7 @@ exports.createWithdrawalRequest = async (req, res) => {
     await resetDailyCoinsIfNeeded(user);
 
     const coinPrice = getCoinPrice();
-    const currentCoins = getActivationCoins(user, coinPrice);
+    const currentCoins = user.coinWallet || 0;
     const startCoins = Number.isFinite(user.withdrawalData.startOfDayCoins)
       ? user.withdrawalData.startOfDayCoins
       : currentCoins;
@@ -145,15 +119,6 @@ exports.createBonusWithdrawalRequest = async (req, res) => {
 
     if (!user || !user.isActivated)
       return res.status(400).json({ message: "Invalid user" });
-
-    if (user.activationAmountRemaining === undefined || user.activationAmountRemaining === null) {
-      const coinPrice = getCoinPrice();
-      const fallback = Number.isFinite(user.activationCoinsRemaining)
-        ? user.activationCoinsRemaining * coinPrice
-        : getActivationFee();
-      user.activationAmountRemaining = fallback;
-      await user.save();
-    }
 
     const rupeeAmount = Number(amount);
     if (!Number.isFinite(rupeeAmount) || rupeeAmount <= 0)
@@ -236,16 +201,12 @@ exports.approveWithdrawal = async (req, res) => {
         ? request.coinAmount
         : request.amount / coinPrice;
 
-      const currentCoins = getActivationCoins(user, coinPrice);
+      const currentCoins = user.coinWallet || 0;
       if (coinAmount > currentCoins) {
         return res.status(400).json({ message: "Insufficient coin balance" });
       }
       await resetDailyCoinsIfNeeded(user);
-      const currentAmount = getActivationAmount(user, coinPrice);
-      user.activationAmountRemaining = Math.max(
-        currentAmount - coinAmount * coinPrice,
-        0
-      );
+      user.coinWallet = Math.max((user.coinWallet || 0) - coinAmount, 0);
       user.withdrawalData.withdrawnTodayCoins += coinAmount;
       await Transaction.create({
         userId: user._id,
@@ -264,7 +225,7 @@ exports.approveWithdrawal = async (req, res) => {
     res.json({
       message: "Withdrawal approved successfully",
       updatedBonusWallet: user.bonusWallet,
-      updatedCoins: getActivationCoins(user, getCoinPrice()),
+      updatedCoins: user.coinWallet || 0,
       taxRate: request.taxRate ?? TAX_RATE,
       taxAmount: request.taxAmount ?? 0,
       netAmount: request.netAmount ?? request.amount,
@@ -302,7 +263,7 @@ exports.getWithdrawalInfo = async (req, res) => {
     await resetDailyCoinsIfNeeded(user);
 
     const coinPrice = getCoinPrice();
-    const currentCoins = getActivationCoins(user, coinPrice);
+    const currentCoins = user.coinWallet || 0;
     const startCoins = Number.isFinite(user.withdrawalData.startOfDayCoins)
       ? user.withdrawalData.startOfDayCoins
       : currentCoins;
@@ -317,7 +278,7 @@ exports.getWithdrawalInfo = async (req, res) => {
       bonusWallet: user.bonusWallet,
       coins: currentCoins,
       coinPrice: coinPrice,
-      activationAmountRemaining: getActivationAmount(user, coinPrice),
+      coinWallet: user.coinWallet || 0,
       taxRate: TAX_RATE,
       dailyLimit,
       withdrawnTodayCoins: user.withdrawalData.withdrawnTodayCoins,

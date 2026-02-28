@@ -57,22 +57,14 @@ const ensureUserFinancials = async (user) => {
     }
   }
 
-  if (user.isActivated) {
-    const amountMissing =
-      user.activationAmountRemaining === undefined || user.activationAmountRemaining === null;
-    const shouldBackfill =
-      amountMissing ||
-      (user.activationAmountRemaining <= 0 && Number.isFinite(user.activationCoinsRemaining) && user.activationCoinsRemaining > 0);
-
-    if (shouldBackfill) {
-      const coinPrice = getCoinPrice();
-      if (Number.isFinite(user.activationCoinsRemaining)) {
-        user.activationAmountRemaining = Math.max(user.activationCoinsRemaining, 0) * coinPrice;
-      } else {
-        const legacyWallet = Number.isFinite(user.walletBalance) ? user.walletBalance : 0;
-        const remaining = Math.max(legacyWallet - (user.bonusWallet || 0), 0);
-        user.activationAmountRemaining = remaining;
-      }
+  // Migration: Convert old activationAmountRemaining to coinWallet if needed
+  if (user.isActivated && (!user.coinWallet || user.coinWallet === 0)) {
+    const coinPrice = getCoinPrice();
+    if (Number.isFinite(user.activationAmountRemaining) && user.activationAmountRemaining > 0) {
+      user.coinWallet = user.activationAmountRemaining / coinPrice;
+      updated = true;
+    } else if (Number.isFinite(user.activationCoinsRemaining) && user.activationCoinsRemaining > 0) {
+      user.coinWallet = user.activationCoinsRemaining;
       updated = true;
     }
   }
@@ -299,9 +291,8 @@ exports.updateUserWallet = async (req, res) => {
         return res.status(400).json({ message: "Invalid coin amount" });
       }
       
-      const { getCoinPrice } = require("../config/coinConfig");
-      const coinPrice = getCoinPrice();
-      user.activationAmountRemaining = parsedCoins * coinPrice;
+      // Directly set coinWallet
+      user.coinWallet = parsedCoins;
       
       // Update startOfDayCoins to reflect new coin amount for daily limit calculation
       if (!Number.isFinite(user.withdrawalData.startOfDayCoins) || user.withdrawalData.startOfDayCoins < parsedCoins) {

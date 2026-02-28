@@ -16,11 +16,11 @@ const app = express();
 
 // CORS Configuration - Allow frontend origins
 const allowedOrigins = [
-  process.env.FRONTEND_URL,  // Production frontend URL from .env
-  process.env.frontend_url_https,  // Production frontend URL with HTTPS from .env
-  process.env.frontend_url_www,  // Production frontend URL with www from .env
-  process.env.frontend_url_www_https,  // Production frontend URL with www and HTTPS from .env
-  process.env.frontend_url_local,  // Local frontend URL from .env
+  process.env.FRONTEND_URL,  // Local development frontend URL from .env
+  process.env.frontend_url_http,  // Production frontend HTTP URL from .env
+  process.env.frontend_url_https, // Production frontend HTTPS URL from .env
+  process.env.frontend_url_http_www,  // Production frontend HTTP www URL from .env
+  process.env.frontend_url_https_www, // Production frontend HTTPS www URL from .env
 ].filter(Boolean); // Remove undefined values
 
 app.use(cors({
