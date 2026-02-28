@@ -48,4 +48,13 @@ app.use("/api/transfer", transferRoutes);
 app.use("/api/public", publicRoutes);
 app.listen(process.env.PORT, () => {
   console.log(`Server running on port ${process.env.PORT}`);
+   const selfPingUrl = process.env.SERVER_URL || `http://localhost:${PORT}`;
+  if (process.env.ENABLE_SELF_PING === 'true') {
+    setInterval(() => {
+      fetch(selfPingUrl)
+        .then(() => console.log("Self ping success"))
+        .catch(() => console.log("Ping failed"));
+    }, 30000); // every 30 seconds
+    console.log(`Self-ping enabled for ${selfPingUrl}`);
+  }
 });
