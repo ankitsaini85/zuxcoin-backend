@@ -227,8 +227,14 @@ exports.getDashboardData = async (req, res) => {
 
     let activeBelow = 0;
 
+    // Count ACTIVATED users positioned BELOW this user (by position)
+    // Works for both active and inactive users - milestones based on activated downline
     if (user.position) {
-      activeBelow = totalActive - user.position;
+      activeBelow = await User.countDocuments({
+        position: { $gt: user.position },
+        isActivated: true,  // Only count ACTIVATED users in the hierarchy
+        ...userFilter,
+      });
     }
 
     res.json({
