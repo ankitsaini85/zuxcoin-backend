@@ -15,21 +15,50 @@ const { loadCoinPrice } = require("./config/coinConfig");
 
 const app = express();
 
-// CORS Configuration - Allow frontend origins
-const allowedOrigins = [
-  process.env.FRONTEND_URL,  // Production frontend URL from .env
-  process.env.frontend_url_http, // Local development URL from .env
-  process.env.frontend_url_https, // Production frontend HTTPS URL from .env
-  process.env.frontend_url_http_www, // Production frontend www HTTP URL from .env
-  process.env.frontend_url_https_www, // Production frontend www HTTPS URL from .env
-].filter(Boolean); // Remove undefined values
+// CORS Configuration - Allow localhost dev + production domains reliably.
+const normalizeOrigin = (origin) => {
+  if (!origin || typeof origin !== "string") return "";
+  return origin.replace(/\/$/, "").toLowerCase();
+};
+
+const allowedOrigins = new Set([
+  "http://localhost:5173",
+  "http://localhost:3000",
+  "http://127.0.0.1:5173",
+  "http://127.0.0.1:3000",
+  "http://zuxcoin.in",
+  "https://zuxcoin.in",
+  "http://www.zuxcoin.in",
+  "https://www.zuxcoin.in",
+  process.env.FRONTEND_URL,
+  process.env.frontend_url_http,
+  process.env.frontend_url_https,
+  process.env.frontend_url_http_www,
+  process.env.frontend_url_https_www,
+].filter(Boolean).map(normalizeOrigin));
+
+const corsOptions = {
+  origin(origin, callback) {
+    // Allow server-to-server requests and tools with no Origin header.
+    if (!origin) {
+      return callback(null, true);
+    }
+
+    const normalized = normalizeOrigin(origin);
+    if (allowedOrigins.has(normalized)) {
+      return callback(null, true);
+    }
+
+    return callback(new Error(`CORS blocked for origin: ${origin}`));
+  },
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+  optionsSuccessStatus: 200,
+};
 
 app.use(compression());
-app.use(cors({
-  origin: allowedOrigins,
-  credentials: true,
-  optionsSuccessStatus: 200,
-}));
+app.use(cors(corsOptions));
 app.use(express.json());
 
 mongoose.connect(process.env.MONGO_URI)
