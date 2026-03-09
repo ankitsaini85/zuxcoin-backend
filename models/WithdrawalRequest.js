@@ -9,6 +9,16 @@ const withdrawalSchema = new mongoose.Schema(
 
     amount: Number,        // ₹ amount
     coinAmount: Number,    // coin amount
+    requestUpiId: { type: String, default: "" },
+    bankDetailsSnapshot: {
+      accountHolderName: { type: String, default: "" },
+      bankName: { type: String, default: "" },
+      accountNumber: { type: String, default: "" },
+      branch: { type: String, default: "" },
+      ifscCode: { type: String, default: "" },
+      upiId: { type: String, default: "" },
+      qrImage: { type: String, default: "" },
+    },
     taxRate: { type: Number, default: 0.05 },
     taxAmount: { type: Number, default: 0 },
     netAmount: { type: Number, default: 0 },

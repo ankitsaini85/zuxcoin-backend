@@ -5,6 +5,31 @@ const { getCoinPrice, getActivationFee } = require("../config/coinConfig");
 
 const TAX_RATE = 0.05;
 
+const normalizeBankDetails = (userLike = {}) => {
+  const details = userLike.bankDetails || {};
+  return {
+    accountHolderName: (details.accountHolderName || userLike.accountHolderName || "").trim(),
+    bankName: (details.bankName || userLike.bankName || "").trim(),
+    accountNumber: (details.accountNumber || userLike.accountNumber || "").trim(),
+    branch: (details.branch || userLike.branch || "").trim(),
+    ifscCode: (details.ifscCode || userLike.ifscCode || "").trim(),
+    upiId: (details.upiId || userLike.upiId || "").trim(),
+    qrImage: details.qrImage || userLike.qrImage || "",
+  };
+};
+
+const hasBankDetails = (details = {}) => {
+  return Boolean(
+    details.accountHolderName ||
+      details.bankName ||
+      details.accountNumber ||
+      details.branch ||
+      details.ifscCode ||
+      details.upiId ||
+      details.qrImage
+  );
+};
+
 const getToday = () => {
   const now = new Date();
   return `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}`;
@@ -42,7 +67,7 @@ const resetDailyCoinsIfNeeded = async (user) => {
 // USER REQUEST COIN WITHDRAWAL (10% daily limit)
 exports.createWithdrawalRequest = async (req, res) => {
   try {
-    const { coinAmount } = req.body;
+    const { coinAmount, requestUpiId } = req.body;
 
     const user = await User.findById(req.user);
 
@@ -90,10 +115,18 @@ exports.createWithdrawalRequest = async (req, res) => {
     const taxAmount = rupeeAmount * TAX_RATE;
     const netAmount = rupeeAmount - taxAmount;
 
+    const normalizedRequestUpi = String(requestUpiId || "").trim();
+    const bankDetailsSnapshot = normalizeBankDetails(user);
+    if (normalizedRequestUpi) {
+      bankDetailsSnapshot.upiId = normalizedRequestUpi;
+    }
+
     const request = await WithdrawalRequest.create({
       userId: user._id,
       amount: rupeeAmount,
       coinAmount: coinsRequested,
+      requestUpiId: normalizedRequestUpi,
+      bankDetailsSnapshot,
       taxRate: TAX_RATE,
       taxAmount,
       netAmount,
@@ -113,7 +146,7 @@ exports.createWithdrawalRequest = async (req, res) => {
 // USER REQUEST BONUS WITHDRAWAL
 exports.createBonusWithdrawalRequest = async (req, res) => {
   try {
-    const { amount } = req.body;
+    const { amount, requestUpiId } = req.body;
 
     const user = await User.findById(req.user);
 
@@ -141,10 +174,18 @@ exports.createBonusWithdrawalRequest = async (req, res) => {
     const taxAmount = rupeeAmount * TAX_RATE;
     const netAmount = rupeeAmount - taxAmount;
 
+    const normalizedRequestUpi = String(requestUpiId || "").trim();
+    const bankDetailsSnapshot = normalizeBankDetails(user);
+    if (normalizedRequestUpi) {
+      bankDetailsSnapshot.upiId = normalizedRequestUpi;
+    }
+
     const request = await WithdrawalRequest.create({
       userId: user._id,
       amount: rupeeAmount,
       coinAmount: null,
+      requestUpiId: normalizedRequestUpi,
+      bankDetailsSnapshot,
       taxRate: TAX_RATE,
       taxAmount,
       netAmount,
@@ -294,10 +335,43 @@ exports.getWithdrawalInfo = async (req, res) => {
 exports.getAllWithdrawals = async (req, res) => {
   try {
     const withdrawals = await WithdrawalRequest.find()
-      .populate("userId", "name email phone uniqueId bankDetails")
+      .populate(
+        "userId",
+        "name email phone uniqueId bankDetails accountHolderName bankName accountNumber branch ifscCode upiId qrImage"
+      )
       .sort({ createdAt: -1 });
 
-    res.json({ withdrawals });
+    const withdrawalsWithBankDetails = withdrawals.map((request) => {
+      const user = request.userId || {};
+      const userBankDetails = normalizeBankDetails(user);
+      const snapshotBankDetails = normalizeBankDetails(request.bankDetailsSnapshot || {});
+      const effectiveBankDetails = hasBankDetails(userBankDetails)
+        ? userBankDetails
+        : snapshotBankDetails;
+      const normalizedRequestUpi = String(request.requestUpiId || "").trim();
+      if (normalizedRequestUpi) {
+        effectiveBankDetails.upiId = normalizedRequestUpi;
+      }
+
+      const requestObj = request.toObject();
+      const normalizedUser = requestObj.userId && typeof requestObj.userId === "object"
+        ? {
+            ...requestObj.userId,
+            bankDetails: hasBankDetails(requestObj.userId.bankDetails)
+              ? requestObj.userId.bankDetails
+              : effectiveBankDetails,
+          }
+        : requestObj.userId;
+
+      return {
+        ...requestObj,
+        userId: normalizedUser,
+        bankDetails: effectiveBankDetails,
+        effectiveBankDetails,
+      };
+    });
+
+    res.json({ withdrawals: withdrawalsWithBankDetails });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
